@@ -23,7 +23,7 @@ func TestNew(t *testing.T) {
 	labelSelector, _ := labels.Parse("foo=bar")
 	annotations, _ := labels.Parse("baz=waldo")
 	namespaces, _ := labels.Parse("qux")
-	namespaceLabels, _ := labels.Parse("taz")
+	namespaceLabels, _ := labels.Parse("taz=wubble")
 	excludedWeekdays := []time.Weekday{time.Friday}
 
 	chaoskube := New(client, labelSelector, annotations, namespaces, namespaceLabels, excludedWeekdays, time.UTC, logger, false, 42)
@@ -48,7 +48,7 @@ func TestNew(t *testing.T) {
 		t.Errorf("expected %s, got %s", "qux", chaoskube.Namespaces.String())
 	}
 
-	if chaoskube.NamespaceLabels.String() != "taz" {
+	if chaoskube.NamespaceLabels.String() != "taz=wubble" {
 		t.Errorf("expected %s, got %s", "taz", chaoskube.NamespaceLabels.String())
 	}
 
@@ -179,22 +179,27 @@ func TestCandidatesNamespaceLabels(t *testing.T) {
 	bar := map[string]string{"namespace": "testing", "name": "bar"}
 
 	for _, test := range []struct {
-		namespaceLabel string
-		pods           []map[string]string
+		namespaceLabels string
+		pods            []map[string]string
 	}{
 		{"", []map[string]string{foo, bar}},
-		{"doesnotexist", []map[string]string{foo, bar}},
-		{"baz", []map[string]string{bar}},
-		{"!baz", []map[string]string{foo}},
-		{"qaz", []map[string]string{}},
-		{"!qaz", []map[string]string{foo, bar}},
+		{"env", []map[string]string{foo, bar}},
+		{"!env", []map[string]string{}},
+		{"env=default", []map[string]string{foo}},
+		{"env=testing", []map[string]string{bar}},
+		{"env!=default", []map[string]string{bar}},
+		{"env!=testing", []map[string]string{foo}},
+		{"env!=default,env!=testing", []map[string]string{}},
+		{"env=default,env!=testing", []map[string]string{foo}},
+		{"env=default,env!=default", []map[string]string{}},
+		{"nomatch", []map[string]string{}},
 	} {
-		namespaceLabel, err := labels.Parse(test.namespaceLabel)
+		namespaceLabels, err := labels.Parse(test.namespaceLabels)
 		if err != nil {
 			t.Fatal(err)
 		}
 
-		chaoskube := setup(t, labels.Everything(), labels.Everything(), labels.Everything(), namespaceLabel, []time.Weekday{}, time.UTC, false, 0)
+		chaoskube := setup(t, labels.Everything(), labels.Everything(), labels.Everything(), namespaceLabels, []time.Weekday{}, time.UTC, false, 0)
 
 		validateCandidates(t, chaoskube, test.pods)
 	}
@@ -405,9 +410,8 @@ func validateLog(t *testing.T, msg string) {
 
 func setup(t *testing.T, labelSelector labels.Selector, annotations labels.Selector, namespaces labels.Selector, namespaceLabels labels.Selector, excludedWeekdays []time.Weekday, timezone *time.Location, dryRun bool, seed int64) *Chaoskube {
 	mockNamespaces := []v1.Namespace{
-		util.NewNamespace("default", ""),
-		util.NewNamespace("testing", "baz"),
-		util.NewNamespace("testing2", "qaz"),
+		util.NewNamespace("default"),
+		util.NewNamespace("testing"),
 	}
 
 	mockPods := []v1.Pod{

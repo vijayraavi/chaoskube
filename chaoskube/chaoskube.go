@@ -8,8 +8,6 @@ import (
 
 	log "github.com/sirupsen/logrus"
 
-	"strings"
-
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/selection"
@@ -87,33 +85,17 @@ func (c *Chaoskube) Candidates() ([]v1.Pod, error) {
 		return nil, err
 	}
 
-	if !c.NamespaceLabels.Empty() {
-		nsListOptions := metav1.ListOptions{LabelSelector: c.NamespaceLabels.String()}
-		namespacesItems, err := c.Client.CoreV1().Namespaces().List(nsListOptions)
-		if err != nil {
-			return nil, err
-		}
-
-		// Extract matching namespaces
-		namespaceList := []string{}
-		for _, ns := range namespacesItems.Items {
-			namespaceList = append(namespaceList, ns.Name)
-		}
-		namespaceLabel, _ := labels.Parse(strings.Join(namespaceList, ","))
-
-		// Append additional namespaces filters
-		reqs, _ := namespaceLabel.Requirements()
-		for _, req := range reqs {
-			c.Namespaces = c.Namespaces.Add(req)
-		}
-	}
-
-	pods, err := filterByNamespaces(podList.Items, c.Namespaces)
+	pods, err := filterPodsByNamespaceLabelSelector(c.Client, podList.Items, c.NamespaceLabels)
 	if err != nil {
 		return nil, err
 	}
 
-	pods, err = filterByAnnotations(pods, c.Annotations)
+	pods, err = filterPodsByNamespaceSelector(pods, c.Namespaces)
+	if err != nil {
+		return nil, err
+	}
+
+	pods, err = filterPodsByAnnotationSelector(pods, c.Annotations)
 	if err != nil {
 		return nil, err
 	}
@@ -169,8 +151,8 @@ func (c *Chaoskube) TerminateVictim() error {
 	return c.DeletePod(victim)
 }
 
-// filterByNamespaces filters a list of pods by a given namespace selector.
-func filterByNamespaces(pods []v1.Pod, namespaces labels.Selector) ([]v1.Pod, error) {
+// filterPodsByNamespaceSelector filters a list of pods by a given namespace selector.
+func filterPodsByNamespaceSelector(pods []v1.Pod, namespaces labels.Selector) ([]v1.Pod, error) {
 	// empty filter returns original list
 	if namespaces.Empty() {
 		return pods, nil
@@ -225,8 +207,8 @@ func filterByNamespaces(pods []v1.Pod, namespaces labels.Selector) ([]v1.Pod, er
 	return filteredList, nil
 }
 
-// filterByAnnotations filters a list of pods by a given annotation selector.
-func filterByAnnotations(pods []v1.Pod, annotations labels.Selector) ([]v1.Pod, error) {
+// filterPodsByAnnotationSelector filters a list of pods by a given annotation selector.
+func filterPodsByAnnotationSelector(pods []v1.Pod, annotations labels.Selector) ([]v1.Pod, error) {
 	// empty filter returns original list
 	if annotations.Empty() {
 		return pods, nil
@@ -241,6 +223,35 @@ func filterByAnnotations(pods []v1.Pod, annotations labels.Selector) ([]v1.Pod, 
 		// include pod if its annotations match the selector
 		if annotations.Matches(selector) {
 			filteredList = append(filteredList, pod)
+		}
+	}
+
+	return filteredList, nil
+}
+
+// filterPodsByNamespaceLabelSelector filters a list of pods by a given label selector on their namespace.
+func filterPodsByNamespaceLabelSelector(client kubernetes.Interface, pods []v1.Pod, labels labels.Selector) ([]v1.Pod, error) {
+	// empty filter returns original list
+	if labels.Empty() {
+		return pods, nil
+	}
+
+	// find all namespaces matching the label selector
+	listOptions := metav1.ListOptions{LabelSelector: labels.String()}
+
+	namespaceList, err := client.CoreV1().Namespaces().List(listOptions)
+	if err != nil {
+		return nil, err
+	}
+
+	filteredList := []v1.Pod{}
+
+	for _, pod := range pods {
+		for _, ns := range namespaceList.Items {
+			// include pod if its in one of the matched namespaces
+			if pod.Namespace == ns.Name {
+				filteredList = append(filteredList, pod)
+			}
 		}
 	}
 
